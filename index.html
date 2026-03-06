@@ -17,7 +17,7 @@
     }
     canvas {
       display: block;
-      cursor: crosshair;
+      cursor: default;
       image-rendering: pixelated;
     }
   </style>
@@ -64,8 +64,14 @@ const UPGRADE_COST_MULT     = 1.55; // each level costs 1.55x previous
 const ENEMY_SHOT_SPREAD     = 0.22;
 
 // Physics damping: velocity *= DAMPING_BASE ^ (dt * DAMPING_RATE)
-const DAMPING_BASE          = 0.82;
-const DAMPING_RATE          = 10;
+// Low damping gives Newtonian drift (EV Nova-style)
+const DAMPING_BASE          = 0.92;
+const DAMPING_RATE          = 1;
+
+// Player flight constants
+const PLAYER_ROTATE_SPEED   = 2.8;   // radians per second
+const PLAYER_THRUST         = 900;   // acceleration (units/s²)
+const REVERSE_THRUST_FACTOR = 0.6;   // fraction of forward thrust applied in reverse
 
 // ============================================================
 //  INPUT
@@ -77,6 +83,7 @@ window.addEventListener('keydown', e => {
   keys[e.code] = true;
   // prevent space / arrow scroll
   if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+  initAudio();
 });
 window.addEventListener('keyup',   e => { keys[e.code] = false; });
 
@@ -335,7 +342,8 @@ class Player {
   constructor() {
     this.x = WORLD / 2;  this.y = WORLD / 2;
     this.vx = 0;         this.vy = 0;
-    this.angle = 0;
+    this.angle = -Math.PI / 2; // start facing up
+    this.rotateSpeed = PLAYER_ROTATE_SPEED;
     this.radius = 16;
 
     // --- base stats ---
@@ -385,21 +393,29 @@ class Player {
         this._boostCDTimer = this.boostCD;
       }
     }
-    if (keys['Space'] && !this.boosting && this._boostCDTimer <= 0) {
+    if ((keys['ShiftLeft'] || keys['ShiftRight']) && !this.boosting && this._boostCDTimer <= 0) {
       this.boosting     = true;
       this._boostTimer  = this.boostDur;
       playSound('boost');
     }
 
-    // thrust
-    const curSpeed = this.boosting ? this.boostSpeed : this.speed;
-    const thrust   = 900;
-    if (keys['KeyW'] || keys['ArrowUp'])    this.vy -= thrust * dt;
-    if (keys['KeyS'] || keys['ArrowDown'])  this.vy += thrust * dt;
-    if (keys['KeyA'] || keys['ArrowLeft'])  this.vx -= thrust * dt;
-    if (keys['KeyD'] || keys['ArrowRight']) this.vx += thrust * dt;
+    // rotate with left / right arrows
+    if (keys['ArrowLeft'])  this.angle -= this.rotateSpeed * dt;
+    if (keys['ArrowRight']) this.angle += this.rotateSpeed * dt;
 
-    // dampen
+    // thrust along ship heading with up / down arrows
+    const curSpeed = this.boosting ? this.boostSpeed : this.speed;
+    const thrust   = PLAYER_THRUST;
+    if (keys['ArrowUp'])   {
+      this.vx += Math.cos(this.angle) * thrust * dt;
+      this.vy += Math.sin(this.angle) * thrust * dt;
+    }
+    if (keys['ArrowDown']) {
+      this.vx -= Math.cos(this.angle) * thrust * REVERSE_THRUST_FACTOR * dt;
+      this.vy -= Math.sin(this.angle) * thrust * REVERSE_THRUST_FACTOR * dt;
+    }
+
+    // dampen (mild — preserves Newtonian drift)
     const damp = Math.pow(DAMPING_BASE, dt * DAMPING_RATE);
     this.vx *= damp;
     this.vy *= damp;
@@ -430,9 +446,9 @@ class Player {
       }
     }
 
-    // fire
+    // fire — Space key
     this._fireTimer -= dt;
-    if (mouse.down && this._fireTimer <= 0) {
+    if (keys['Space'] && this._fireTimer <= 0) {
       this._fireTimer = 1 / this.fireRate;
       this._shoot(projectiles);
     }
@@ -1144,10 +1160,6 @@ class Game {
 
     if (this.state !== STATES.PLAYING) return;
 
-    // aim player at mouse in world space
-    const wm = this.camera.screenToWorld(this.mouseX, this.mouseY);
-    this.player.angle = angTo(this.player, wm);
-
     // update entities
     this.player.update(dt, this.projectiles, this.particles);
     for (const e of this.enemies) {
@@ -1272,7 +1284,7 @@ class Game {
 
     ctx.fillStyle = '#445566';
     ctx.font      = '12px Courier New';
-    ctx.fillText('WASD: Move  |  Mouse: Aim  |  Click: Fire  |  Space: Boost', cx, cy + 95);
+    ctx.fillText('← → Rotate  |  ↑ Thrust  |  ↓ Brake  |  Space: Fire  |  Shift: Boost', cx, cy + 95);
 
     if (this.highScore > 0) {
       ctx.fillStyle = '#ffcc33';
